@@ -49,12 +49,16 @@ func _load_game_data() -> void:
 		recipes = recipe_json
 
 func _build_deck() -> void:
-	for ingredient_id in ["potato", "meat"]:
-		for _copy in range(DECK_COPIES_PER_INGREDIENT):
-			deck.append(ingredient_id)
+	for card_id_variant in card_definitions.keys():
+		var card_id := str(card_id_variant)
+		var card: Dictionary = card_definitions[card_id]
+		if str(card.get("kind", "")) != "ingredient":
+			continue
+		var copies := int(card.get("deck_copies", 8))
+		for _copy in range(copies):
+			deck.append(card_id)
 	random.randomize()
 	deck.shuffle()
-
 func _build_ui() -> void:
 	var background := ColorRect.new()
 	background.color = Color("#1f2922")
@@ -208,6 +212,7 @@ func _refresh_board() -> void:
 			else:
 				var card: Dictionary = card_definitions.get(card_id, {})
 				cell.text = str(card.get("name", card_id))
+				cell.tooltip_text = _build_recipe_tooltip(card_id)
 				cell.modulate = Color(str(card.get("color", "#ffffff")))
 			cell.pressed.connect(_on_cell_pressed.bind(position))
 			grid.add_child(cell)
@@ -225,6 +230,7 @@ func _add_card_to_hand(card_id: String) -> void:
 	var card: Dictionary = card_definitions.get(card_id, {})
 	var card_button := Button.new()
 	card_button.text = str(card.get("name", card_id))
+	card_button.tooltip_text = _build_recipe_tooltip(card_id)
 	card_button.set_meta("card_id", card_id)
 	card_button.custom_minimum_size = Vector2(140, 48)
 	card_button.toggle_mode = true
@@ -317,9 +323,35 @@ func _update_storage_slots() -> void:
 	if fridge_card_id.is_empty():
 		fridge_label.text = "冷蔵庫"
 		fridge_slot_button.text = "空き"
+		fridge_slot_button.tooltip_text = ''
 	else:
 		fridge_label.text = "冷蔵庫（選択中）" if fridge_card_selected else "冷蔵庫"
 		fridge_slot_button.text = str(card_definitions.get(fridge_card_id, {}).get("name", fridge_card_id))
+		fridge_slot_button.tooltip_text = _build_recipe_tooltip(fridge_card_id)
+func _build_recipe_tooltip(card_id: String) -> String:
+	var card_name := str(card_definitions.get(card_id, {}).get("name", card_id))
+	var tooltip := "%s を使うレシピ" % card_name
+	var found_recipe := false
+	for recipe_variant in recipes:
+		if not recipe_variant is Dictionary:
+			continue
+		var ingredients: Array = recipe_variant.get("ingredients", [])
+		if not ingredients.has(card_id):
+			continue
+		var ingredient_names := ""
+		for index in range(ingredients.size()):
+			if index > 0:
+				ingredient_names += " + "
+			var ingredient_id := str(ingredients[index])
+			ingredient_names += str(card_definitions.get(ingredient_id, {}).get("name", ingredient_id))
+		var result_id := str(recipe_variant.get("result", ""))
+		var result_name := str(card_definitions.get(result_id, {}).get("name", result_id))
+		var max_distance := int(recipe_variant.get("max_distance", 1))
+		tooltip += "\n・%s ← %s（距離%dマス以内）" % [result_name, ingredient_names, max_distance]
+		found_recipe = true
+	if not found_recipe:
+		tooltip += "\nこのカードを使うレシピはありません。"
+	return tooltip
 func _resolve_recipes(placed_at: Vector2i) -> String:
 	for recipe_variant in recipes:
 		if not recipe_variant is Dictionary:
