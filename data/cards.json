@@ -1,0 +1,7 @@
+﻿{
+  "cards": {
+    "potato": { "name": "じゃがいも", "kind": "ingredient", "color": "#D6A84F" },
+    "meat": { "name": "肉", "kind": "ingredient", "color": "#C96F65" },
+    "nikujaga": { "name": "肉じゃが", "kind": "dish", "color": "#8F6B45" }
+  }
+}
