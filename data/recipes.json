@@ -1,16 +1,16 @@
 ﻿[
-  { "ingredients": ["potato", "meat"], "result": "nikujaga", "max_distance": 1 },
-  { "ingredients": ["onion", "carrot", "water"], "result": "vegetable_soup", "max_distance": 1 },
-  { "ingredients": ["potato", "carrot", "curry_roux"], "result": "vegetable_curry", "max_distance": 1 },
+  { "ingredients": ["potato", { "category": "meat" }], "result": "nikujaga", "max_distance": 1 },
+  { "ingredients": [{ "category": "vegetable" }, { "category": "vegetable" }, "water"], "result": "vegetable_soup", "max_distance": 1 },
+  { "ingredients": [{ "category": "vegetable" }, { "category": "vegetable" }, "curry_roux"], "result": "vegetable_curry", "max_distance": 1 },
   { "ingredients": ["rice", "water"], "result": "cooked_rice", "max_distance": 1 },
   { "ingredients": ["cooked_rice", "egg", "ketchup"], "result": "omurice", "max_distance": 1 },
   { "ingredients": ["flour", "egg", "milk"], "result": "pancake", "max_distance": 1 },
-  { "ingredients": ["fish", "salt", "lemon"], "result": "lemon_fish", "max_distance": 1 },
+  { "ingredients": [{ "category": "seafood" }, "salt", "lemon"], "result": "lemon_fish", "max_distance": 1 },
   { "ingredients": ["cooked_rice", "chicken", "onion"], "result": "oyakodon", "max_distance": 1 },
-  { "ingredients": ["cabbage", "pork", "flour", "egg"], "result": "okonomiyaki", "max_distance": 1 },
+  { "ingredients": [{ "category": "vegetable" }, { "category": "meat" }, "flour", "egg"], "result": "okonomiyaki", "max_distance": 1 },
   { "ingredients": ["tomato", "cheese", "basil"], "result": "margherita", "max_distance": 1 },
-  { "ingredients": ["banana", "milk", "honey"], "result": "banana_smoothie", "max_distance": 1 },
-  { "ingredients": ["mushroom", "butter", "salt"], "result": "mushroom_saute", "max_distance": 1 },
-  { "ingredients": ["sugar", "flour", "egg"], "result": "cake", "max_distance": 1 },
-  { "ingredients": ["apple", "flour", "sugar"], "result": "apple_pie", "max_distance": 1 }
+  { "ingredients": [{ "category": "fruit" }, { "category": "dairy" }, { "category": "sweetener" }], "result": "banana_smoothie", "max_distance": 1 },
+  { "ingredients": [{ "category": "mushroom" }, { "category": "fat" }, "salt"], "result": "mushroom_saute", "max_distance": 1 },
+  { "ingredients": [{ "category": "sweetener" }, "flour", "egg"], "result": "cake", "max_distance": 1 },
+  { "ingredients": [{ "category": "fruit" }, "flour", { "category": "sweetener" }], "result": "fruit_pie", "max_distance": 1 }
 ]

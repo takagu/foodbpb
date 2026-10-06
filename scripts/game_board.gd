@@ -5,12 +5,19 @@ const CARD_SIZE := Vector2(140, 76)
 const DECK_COPIES_PER_INGREDIENT := 8
 const CARD_DATA_PATH := "res://data/cards.json"
 const RECIPE_DATA_PATH := "res://data/recipes.json"
+const FLAVOR_RULES_PATH := "res://data/flavor_rules.json"
+const FLAVOR_KEYS := ["sweet", "salty", "sour", "bitter", "umami"]
+const FLAVOR_NAMES := {"sweet": "甘味", "salty": "塩味", "sour": "酸味", "bitter": "苦味", "umami": "うま味"}
 
 var card_definitions: Dictionary = {}
+var category_names: Dictionary = {}
 var recipes: Array = []
+var flavor_rules: Dictionary = {}
 var deck: Array[String] = []
 var board_cards: Dictionary = {}
+var board_flavors: Dictionary = {}
 var fridge_card_id: String = ""
+var fridge_flavors: Dictionary = {}
 var random := RandomNumberGenerator.new()
 var grid: GridContainer
 var status_label: Label
@@ -47,6 +54,7 @@ func _load_game_data() -> void:
 	var card_json: Variant = JSON.parse_string(card_text)
 	if card_json is Dictionary:
 		card_definitions = card_json.get("cards", {})
+		category_names = card_json.get("categories", {})
 
 	var recipe_file := FileAccess.open(RECIPE_DATA_PATH, FileAccess.READ)
 	if recipe_file == null:
@@ -56,6 +64,14 @@ func _load_game_data() -> void:
 	var recipe_json: Variant = JSON.parse_string(recipe_text)
 	if recipe_json is Array:
 		recipes = recipe_json
+
+	var flavor_file := FileAccess.open(FLAVOR_RULES_PATH, FileAccess.READ)
+	if flavor_file == null:
+		push_error("味ルールを開けません: " + FLAVOR_RULES_PATH)
+		return
+	var flavor_json: Variant = JSON.parse_string(flavor_file.get_as_text().trim_prefix("\uFEFF"))
+	if flavor_json is Dictionary:
+		flavor_rules = flavor_json
 
 func _build_deck() -> void:
 	for card_id_variant in card_definitions.keys():
@@ -104,9 +120,9 @@ func _build_ui() -> void:
 	header.add_child(cook_button)
 
 	status_label = Label.new()
-	status_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-	status_label.clip_text = true
-	status_label.custom_minimum_size.y = 30
+	status_label.clip_text = false
+	status_label.custom_minimum_size.y = 64
+	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(status_label)
 
 	grid = GridContainer.new()
@@ -267,12 +283,13 @@ func _draw_card() -> void:
 	_update_deck_count()
 	_update_status("引いたカード: %s。手札からカードを選んでください。" % card_definitions.get(card_id, {}).get("name", card_id))
 
-func _add_card_to_hand(card_id: String) -> Button:
+func _add_card_to_hand(card_id: String, flavor_values: Dictionary = {}) -> Button:
 	var card: Dictionary = card_definitions.get(card_id, {})
 	var card_button := Button.new()
 	card_button.text = str(card.get("name", card_id))
 	card_button.tooltip_text = _build_recipe_tooltip(card_id)
 	card_button.set_meta("card_id", card_id)
+	card_button.set_meta("flavors", _normalize_flavors(flavor_values if not flavor_values.is_empty() else card.get("flavors", {})))
 	card_button.toggle_mode = false
 	_style_card_button(card_button, Color(str(card.get("color", "#ffffff"))))
 	hand_container.add_child(card_button)
@@ -421,11 +438,14 @@ func _perform_hand_drop(card_id: String, source: Dictionary, destination: Dictio
 		"board":
 			var target_position: Vector2i = destination["position"]
 			var displaced_card := str(board_cards.get(target_position, ""))
+			var displaced_flavors: Dictionary = board_flavors.get(target_position, {}).duplicate(true)
+			var moving_flavors: Dictionary = source_control.get_meta("flavors", _get_card_flavors(card_id)).duplicate(true) if is_instance_valid(source_control) else _get_card_flavors(card_id)
 			board_cards[target_position] = card_id
+			board_flavors[target_position] = moving_flavors
 			if is_instance_valid(source_control):
 				source_control.queue_free()
 			if not displaced_card.is_empty():
-				_add_card_to_hand(displaced_card)
+				_add_card_to_hand(displaced_card, displaced_flavors)
 			_refresh_board()
 			_update_status("カードを盤面へ移動しました。")
 		"fridge":
@@ -433,6 +453,7 @@ func _perform_hand_drop(card_id: String, source: Dictionary, destination: Dictio
 				_update_status("冷蔵庫は一杯です。カードを盤面へ置くか、先に取り出してください。")
 				return
 			fridge_card_id = card_id
+			fridge_flavors = source_control.get_meta("flavors", _get_card_flavors(card_id)).duplicate(true) if is_instance_valid(source_control) else _get_card_flavors(card_id)
 			if is_instance_valid(source_control):
 				source_control.queue_free()
 			_update_storage_slots()
@@ -450,20 +471,27 @@ func _perform_board_drop(card_id: String, source: Dictionary, destination: Dicti
 			_move_board_card(source_position, destination["position"])
 		"fridge":
 			var displaced_card := fridge_card_id
+			var displaced_flavors: Dictionary = fridge_flavors.duplicate(true)
+			var moving_flavors: Dictionary = board_flavors.get(source_position, _get_card_flavors(card_id)).duplicate(true)
 			fridge_card_id = card_id
+			fridge_flavors = moving_flavors
 			if displaced_card.is_empty():
 				board_cards.erase(source_position)
+				board_flavors.erase(source_position)
 			else:
 				board_cards[source_position] = displaced_card
+				board_flavors[source_position] = displaced_flavors
 			_refresh_board()
 			_update_storage_slots()
 		"trash":
 			board_cards.erase(source_position)
+			board_flavors.erase(source_position)
 			_refresh_board()
 			_update_status("カードをゴミ箱へ捨てました。")
 		"hand":
 			board_cards.erase(source_position)
-			_add_card_to_hand(card_id)
+			_add_card_to_hand(card_id, board_flavors.get(source_position, _get_card_flavors(card_id)))
+			board_flavors.erase(source_position)
 			_refresh_board()
 			_update_status("カードを手札へ移動しました。")
 
@@ -473,12 +501,16 @@ func _perform_fridge_drop(card_id: String, destination: Dictionary) -> void:
 		"board":
 			var target_position: Vector2i = destination["position"]
 			var displaced_card := str(board_cards.get(target_position, ""))
+			var displaced_flavors: Dictionary = board_flavors.get(target_position, {}).duplicate(true)
 			board_cards[target_position] = card_id
+			board_flavors[target_position] = fridge_flavors.duplicate(true)
 			fridge_card_id = displaced_card
+			fridge_flavors = displaced_flavors
 			_refresh_board()
 			_update_storage_slots()
 		"trash":
 			fridge_card_id = ""
+			fridge_flavors.clear()
 			_update_storage_slots()
 			_update_status("冷蔵庫のカードをゴミ箱へ捨てました。")
 		"hand":
@@ -488,13 +520,19 @@ func _move_board_card(source: Vector2i, destination: Vector2i) -> void:
 	if source == destination or not board_cards.has(source):
 		return
 	var moving_card: String = board_cards[source]
+	var moving_flavors: Dictionary = board_flavors.get(source, _get_card_flavors(moving_card)).duplicate(true)
 	if board_cards.has(destination):
 		var displaced_card: String = board_cards[destination]
+		var displaced_flavors: Dictionary = board_flavors.get(destination, _get_card_flavors(displaced_card)).duplicate(true)
 		board_cards[destination] = moving_card
+		board_flavors[destination] = moving_flavors
 		board_cards[source] = displaced_card
+		board_flavors[source] = displaced_flavors
 	else:
 		board_cards.erase(source)
+		board_flavors.erase(source)
 		board_cards[destination] = moving_card
+		board_flavors[destination] = moving_flavors
 	_refresh_board()
 	_update_status("カードを盤面上で移動しました。")
 func _build_recipe_tooltip(card_id: String) -> String:
@@ -505,14 +543,18 @@ func _build_recipe_tooltip(card_id: String) -> String:
 		if not recipe_variant is Dictionary:
 			continue
 		var ingredients: Array = recipe_variant.get("ingredients", [])
-		if not ingredients.has(card_id):
+		var uses_card := false
+		for requirement in ingredients:
+			if _card_matches_ingredient(card_id, requirement):
+				uses_card = true
+				break
+		if not uses_card:
 			continue
 		var ingredient_names := ""
 		for index in range(ingredients.size()):
 			if index > 0:
 				ingredient_names += " + "
-			var ingredient_id := str(ingredients[index])
-			ingredient_names += str(card_definitions.get(ingredient_id, {}).get("name", ingredient_id))
+			ingredient_names += _ingredient_requirement_name(ingredients[index])
 		var result_id := str(recipe_variant.get("result", ""))
 		var result_name := str(card_definitions.get(result_id, {}).get("name", result_id))
 		var max_distance := int(recipe_variant.get("max_distance", 1))
@@ -521,6 +563,71 @@ func _build_recipe_tooltip(card_id: String) -> String:
 	if not found_recipe:
 		tooltip += "\nこのカードを使うレシピはありません。"
 	return tooltip
+
+func _ingredient_requirement_name(requirement: Variant) -> String:
+	if requirement is Dictionary:
+		var category_id := str(requirement.get("category", ""))
+		if not category_id.is_empty():
+			return "%sカテゴリ" % str(category_names.get(category_id, category_id))
+		return "不明な条件"
+	var card_id := str(requirement)
+	return str(card_definitions.get(card_id, {}).get("name", card_id))
+
+func _card_matches_ingredient(card_id: String, requirement: Variant) -> bool:
+	if requirement is Dictionary:
+		var category_id := str(requirement.get("category", ""))
+		if category_id.is_empty():
+			return false
+		var card: Dictionary = card_definitions.get(card_id, {})
+		var categories: Array = card.get("categories", [])
+		return categories.has(category_id)
+	return card_id == str(requirement)
+
+func _get_card_flavors(card_id: String) -> Dictionary:
+	return _normalize_flavors(card_definitions.get(card_id, {}).get("flavors", {}))
+
+func _normalize_flavors(values: Dictionary) -> Dictionary:
+	var normalized: Dictionary = {}
+	for flavor_key in FLAVOR_KEYS:
+		normalized[flavor_key] = maxf(0.0, float(values.get(flavor_key, 0.0)))
+	return normalized
+
+func _sum_card_flavors(positions: Array) -> Dictionary:
+	var total := _normalize_flavors({})
+	for position_variant in positions:
+		var position: Vector2i = position_variant
+		var card_id := str(board_cards.get(position, ""))
+		var flavors: Dictionary = board_flavors.get(position, _get_card_flavors(card_id))
+		for flavor_key in FLAVOR_KEYS:
+			total[flavor_key] = float(total[flavor_key]) + float(flavors.get(flavor_key, 0.0))
+	return total
+
+func _calculate_deliciousness(flavors: Dictionary) -> Dictionary:
+	var main_flavor_order: Array = flavor_rules.get("main_flavor_tie_order", ["sweet", "salty", "sour", "bitter"])
+	var main_flavor := str(main_flavor_order[0]) if not main_flavor_order.is_empty() else "sweet"
+	for flavor_index in range(1, main_flavor_order.size()):
+		var flavor_key := str(main_flavor_order[flavor_index])
+		if float(flavors.get(flavor_key, 0.0)) > float(flavors.get(main_flavor, 0.0)):
+			main_flavor = flavor_key
+	var compatibility: Dictionary = flavor_rules.get("compatibility", {})
+	var main_rules: Dictionary = compatibility.get(main_flavor, {})
+	var good_total := 0.0
+	var bad_total := 0.0
+	for flavor_key in main_rules.get("good", []):
+		good_total += float(flavors.get(str(flavor_key), 0.0))
+	for flavor_key in main_rules.get("bad", []):
+		bad_total += float(flavors.get(str(flavor_key), 0.0))
+	var umami_config: Dictionary = flavor_rules.get("umami_multiplier", {})
+	var multiplier := maxf(float(umami_config.get("minimum", 1.0)), float(umami_config.get("base", 1.0)) + float(flavors.get("umami", 0.0)) * float(umami_config.get("per_point", 0.1)))
+	var base_score := float(flavors.get(main_flavor, 0.0)) + good_total - bad_total
+	return {"main_flavor": main_flavor, "good_total": good_total, "bad_total": bad_total, "multiplier": multiplier, "deliciousness": base_score * multiplier}
+
+func _format_number(value: float) -> String:
+	var rounded := snappedf(value, 0.01)
+	if is_equal_approx(rounded, float(round(rounded))):
+		return str(int(round(rounded)))
+	return "%.2f" % rounded
+
 func _cook_board() -> void:
 	var recipe_matches := _find_board_recipe_matches()
 	if recipe_matches.is_empty():
@@ -528,6 +635,7 @@ func _cook_board() -> void:
 		return
 	var consumed_positions: Dictionary = {}
 	var cooked_count := 0
+	var cooked_summaries := PackedStringArray()
 	for recipe_match in recipe_matches:
 		var positions: Array = recipe_match["positions"]
 		var can_cook := true
@@ -539,18 +647,29 @@ func _cook_board() -> void:
 			continue
 		var anchor: Vector2i = recipe_match["anchor"]
 		var result_id: String = recipe_match["result"]
+		var flavor_total := _sum_card_flavors(positions)
+		var taste_result := _calculate_deliciousness(flavor_total)
+		var result_name := str(card_definitions.get(result_id, {}).get("name", result_id))
+		var flavor_summary := ""
+		for flavor_key in FLAVOR_KEYS:
+			if not flavor_summary.is_empty():
+				flavor_summary += " / "
+			flavor_summary += "%s %s" % [FLAVOR_NAMES[flavor_key], _format_number(float(flavor_total[flavor_key]))]
+		cooked_summaries.append("%s: %s | 主役 %s | うま味倍率 x%s | おいしさ %s" % [result_name, flavor_summary, FLAVOR_NAMES[taste_result["main_flavor"]], _format_number(float(taste_result["multiplier"])), _format_number(float(taste_result["deliciousness"]))])
 		for position_variant in positions:
 			var position: Vector2i = position_variant
 			consumed_positions[position] = true
 			if position != anchor:
 				board_cards.erase(position)
+				board_flavors.erase(position)
 		board_cards[anchor] = result_id
+		board_flavors[anchor] = flavor_total
 		cooked_count += 1
 	if cooked_count == 0:
 		_update_status("合成対象のカードが重なっているため、料理できませんでした。")
 		return
 	_refresh_board()
-	_update_status("%d品の料理が完成しました。" % cooked_count)
+	_update_status("%d品の料理が完成しました。\n%s" % [cooked_count, "\n".join(cooked_summaries)])
 
 func _find_board_recipe_matches() -> Array[Dictionary]:
 	var matches: Array[Dictionary] = []
@@ -563,9 +682,6 @@ func _find_board_recipe_matches() -> Array[Dictionary]:
 			continue
 		for position_variant in board_cards.keys():
 			var anchor: Vector2i = position_variant
-			var anchor_card_id := str(board_cards[anchor])
-			if not ingredients.has(anchor_card_id):
-				continue
 			var recipe_match: Dictionary = _find_recipe_match_at(anchor, recipe_variant)
 			if recipe_match.is_empty():
 				continue
@@ -588,32 +704,37 @@ func _find_recipe_match_at(anchor: Vector2i, recipe: Dictionary) -> Dictionary:
 		return {}
 	var ingredients: Array = recipe.get("ingredients", [])
 	var anchor_card_id := str(board_cards[anchor])
-	var anchor_ingredient_index := ingredients.find(anchor_card_id)
-	if anchor_ingredient_index < 0:
-		return {}
-	var matched_positions: Array = [anchor]
-	for ingredient_index in range(ingredients.size()):
-		if ingredient_index == anchor_ingredient_index:
+	for anchor_slot in range(ingredients.size()):
+		if not _card_matches_ingredient(anchor_card_id, ingredients[anchor_slot]):
 			continue
-		var ingredient_id := str(ingredients[ingredient_index])
-		var match_found := false
-		for candidate_variant in board_cards.keys():
-			var candidate: Vector2i = candidate_variant
-			if matched_positions.has(candidate):
-				continue
-			if _grid_distance(anchor, candidate) > int(recipe.get("max_distance", 1)):
-				continue
-			if str(board_cards[candidate]) == ingredient_id:
-				matched_positions.append(candidate)
-				match_found = true
-				break
-		if not match_found:
-			return {}
-	return {
-		"anchor": anchor,
-		"positions": matched_positions,
-		"result": str(recipe.get("result", ""))
-	}
+		var matched_positions := _match_remaining_ingredients(anchor, ingredients, anchor_slot, 0, [anchor], int(recipe.get("max_distance", 1)))
+		if not matched_positions.is_empty():
+			return {
+				"anchor": anchor,
+				"positions": matched_positions,
+				"result": str(recipe.get("result", ""))
+			}
+	return {}
+
+func _match_remaining_ingredients(anchor: Vector2i, ingredients: Array, anchor_slot: int, slot_index: int, matched_positions: Array, max_distance: int) -> Array:
+	if slot_index >= ingredients.size():
+		return matched_positions
+	if slot_index == anchor_slot:
+		return _match_remaining_ingredients(anchor, ingredients, anchor_slot, slot_index + 1, matched_positions, max_distance)
+	for candidate_variant in board_cards.keys():
+		var candidate: Vector2i = candidate_variant
+		if matched_positions.has(candidate):
+			continue
+		if _grid_distance(anchor, candidate) > max_distance:
+			continue
+		if not _card_matches_ingredient(str(board_cards[candidate]), ingredients[slot_index]):
+			continue
+		var next_positions := matched_positions.duplicate()
+		next_positions.append(candidate)
+		var complete_match := _match_remaining_ingredients(anchor, ingredients, anchor_slot, slot_index + 1, next_positions, max_distance)
+		if not complete_match.is_empty():
+			return complete_match
+	return []
 func _grid_distance(a: Vector2i, b: Vector2i) -> int:
 	return abs(a.x - b.x) + abs(a.y - b.y)
 

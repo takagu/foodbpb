@@ -1,0 +1,14 @@
+{
+  "main_flavor_tie_order": ["sweet", "salty", "sour", "bitter"],
+  "compatibility": {
+    "sweet": { "good": ["salty", "sour"], "bad": ["bitter"] },
+    "salty": { "good": ["umami", "sweet"], "bad": ["bitter"] },
+    "sour": { "good": ["sweet", "salty"], "bad": ["bitter"] },
+    "bitter": { "good": ["sweet", "salty"], "bad": ["sour"] }
+  },
+  "umami_multiplier": {
+    "base": 1.0,
+    "per_point": 0.1,
+    "minimum": 1.0
+  }
+}
