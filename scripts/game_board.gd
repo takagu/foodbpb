@@ -6,8 +6,11 @@ const DECK_COPIES_PER_INGREDIENT := 8
 const CARD_DATA_PATH := "res://data/cards.json"
 const RECIPE_DATA_PATH := "res://data/recipes.json"
 const FLAVOR_RULES_PATH := "res://data/flavor_rules.json"
+const CARDS_PER_TURN := 5
 const FLAVOR_KEYS := ["sweet", "salty", "sour", "bitter", "umami"]
 const FLAVOR_NAMES := {"sweet": "甘味", "salty": "塩味", "sour": "酸味", "bitter": "苦味", "umami": "うま味"}
+const COURSE_KEYS := ["appetizer", "soup", "main", "dessert"]
+const COURSE_NAMES := {"appetizer": "前菜", "soup": "スープ", "main": "メイン", "dessert": "デザート"}
 
 var card_definitions: Dictionary = {}
 var category_names: Dictionary = {}
@@ -18,6 +21,12 @@ var board_cards: Dictionary = {}
 var board_flavors: Dictionary = {}
 var fridge_card_id: String = ""
 var fridge_flavors: Dictionary = {}
+var turn_active := false
+var turn_number := 0
+var total_score := 1.0
+var menu_course_scores := {"appetizer": 0.0, "soup": 0.0, "main": 0.0, "dessert": 0.0}
+var menu_course_counts := {"appetizer": 0, "soup": 0, "main": 0, "dessert": 0}
+var menu_course_terms := {"appetizer": PackedStringArray(), "soup": PackedStringArray(), "main": PackedStringArray(), "dessert": PackedStringArray()}
 var random := RandomNumberGenerator.new()
 var grid: GridContainer
 var status_label: Label
@@ -28,6 +37,7 @@ var fridge_label: Label
 var fridge_slot_button: Button
 var trash_slot_button: Button
 var cook_button: Button
+var score_label: Label
 var board_cell_buttons: Dictionary = {}
 var highlighted_positions: Dictionary = {}
 var drag_source: Dictionary = {}
@@ -43,7 +53,7 @@ func _ready() -> void:
 	_build_deck()
 	_build_ui()
 	_refresh_board()
-	_update_status("山札や手札のカードをドラッグして移動します。材料が光ったら「料理」を押します。")
+	_update_status("山札を押してターン開始。5枚引いたらカードを配置し、「料理」で得点を計算します。")
 
 func _load_game_data() -> void:
 	var card_file := FileAccess.open(CARD_DATA_PATH, FileAccess.READ)
@@ -112,8 +122,19 @@ func _build_ui() -> void:
 	heading.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	header.add_child(heading)
 
+	score_label = Label.new()
+	score_label.custom_minimum_size = Vector2(420, 64)
+	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	score_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	score_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	score_label.clip_text = false
+	score_label.add_theme_font_size_override("font_size", 14)
+	header.add_child(score_label)
+	_update_score_display()
+
 	cook_button = Button.new()
 	cook_button.text = "料理"
+	cook_button.tooltip_text = "料理を完成させて得点を計算し、ターンを終了します。"
 	cook_button.custom_minimum_size = Vector2(130, 44)
 	cook_button.add_theme_font_size_override("font_size", 20)
 	cook_button.pressed.connect(_cook_board)
@@ -175,11 +196,11 @@ func _build_ui() -> void:
 	deck_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	deck_label.add_theme_font_size_override("font_size", 16)
 	deck_content.add_child(deck_label)
-	deck_draw_button = _make_storage_button("カードを引く")
+	deck_draw_button = _make_storage_button("ターン開始")
 	deck_content.add_child(deck_draw_button)
 
 	hand_label = Label.new()
-	hand_label.text = "手札（カードをドラッグして移動）"
+	hand_label.text = "手札（配置しなかったカードはターン終了時に捨てられます）"
 	column.add_child(hand_label)
 
 	hand_scroll = ScrollContainer.new()
@@ -211,7 +232,7 @@ func _make_storage_panel(panel_color: Color) -> PanelContainer:
 	return panel
 func _make_storage_button(label_text: String) -> Button:
 	var button := Button.new()
-	button.text = label_text
+	_set_card_button_text(button, label_text)
 	_style_card_button(button, Color("#080808"))
 	return button
 func _refresh_board() -> void:
@@ -224,7 +245,7 @@ func _refresh_board() -> void:
 		for position_variant in recipe_match["positions"]:
 			highlighted_positions[position_variant] = true
 	if cook_button != null:
-		cook_button.disabled = recipe_matches.is_empty()
+		cook_button.disabled = not turn_active
 	for y in range(BOARD_SIZE):
 		for x in range(BOARD_SIZE):
 			var position := Vector2i(x, y)
@@ -235,16 +256,58 @@ func _refresh_board() -> void:
 			cell.add_theme_font_size_override("font_size", 17)
 			var card_id: String = board_cards.get(position, "")
 			if card_id.is_empty():
-				cell.text = "空き"
+				_set_card_button_text(cell, "空き")
 				_style_card_button(cell, Color("#080808"))
 			else:
 				var card: Dictionary = card_definitions.get(card_id, {})
 				var card_color := Color(str(card.get("color", "#ffffff")))
-				cell.text = str(card.get("name", card_id))
+				var display_name := str(card.get("name", card_id))
+				var course := _get_course_for_dish(card_id)
+				if not course.is_empty():
+					display_name += "\n[%s]" % COURSE_NAMES[course]
+				_set_card_button_text(cell, display_name)
 				cell.tooltip_text = _build_recipe_tooltip(card_id)
 				_style_card_button(cell, card_color, highlighted_positions.has(position))
 			grid.add_child(cell)
 			board_cell_buttons[position] = cell
+
+func _set_card_button_text(button: Button, value: String) -> void:
+	var text_label: Label
+	if button.has_meta("card_text_label"):
+		text_label = button.get_meta("card_text_label")
+	else:
+		button.text = ""
+		text_label = Label.new()
+		text_label.name = "CardText"
+		text_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		text_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		text_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		text_label.clip_text = true
+		text_label.custom_minimum_size = Vector2.ZERO
+		text_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		text_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		text_label.add_theme_color_override("font_color", Color.WHITE)
+		text_label.add_theme_font_size_override("font_size", 16)
+		button.add_child(text_label)
+		text_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		text_label.offset_left = 6
+		text_label.offset_top = 4
+		text_label.offset_right = -6
+		text_label.offset_bottom = -4
+		button.set_meta("card_text_label", text_label)
+	text_label.text = value
+
+func _get_course_for_dish(card_id: String) -> String:
+	for recipe_variant in recipes:
+		if not recipe_variant is Dictionary:
+			continue
+		if str(recipe_variant.get("result", "")) != card_id:
+			continue
+		var course := str(recipe_variant.get("course", ""))
+		if COURSE_NAMES.has(course):
+			return course
+	return ""
 
 func _style_card_button(button: Button, card_color: Color, glowing := false) -> void:
 	button.custom_minimum_size = CARD_SIZE
@@ -274,19 +337,34 @@ func _make_board_card_style(card_color: Color, glowing: bool) -> StyleBoxFlat:
 		style.border_color = card_color.lightened(0.28)
 		style.set_border_width_all(2)
 	return style
-func _draw_card() -> void:
+func _draw_card() -> bool:
 	if deck.is_empty():
-		_update_status("山札がありません。盤面のカードはそのまま残ります。")
-		return
+		return false
 	var card_id: String = deck.pop_back()
 	_add_card_to_hand(card_id)
+	return true
+
+func _start_turn() -> void:
+	if turn_active:
+		_update_status("ターンはすでに進行中です。「料理」を押すと終了します。")
+		return
+	if deck.is_empty():
+		_update_status("山札がありません。ゲーム終了です。")
+		return
+	turn_active = true
+	turn_number += 1
+	var drawn_count := 0
+	for _draw_index in range(CARDS_PER_TURN):
+		if _draw_card():
+			drawn_count += 1
 	_update_deck_count()
-	_update_status("引いたカード: %s。手札からカードを選んでください。" % card_definitions.get(card_id, {}).get("name", card_id))
+	_refresh_board()
+	_update_status("ターン%d開始: %d枚引きました。カードを配置して「料理」を押してください。" % [turn_number, drawn_count])
 
 func _add_card_to_hand(card_id: String, flavor_values: Dictionary = {}) -> Button:
 	var card: Dictionary = card_definitions.get(card_id, {})
 	var card_button := Button.new()
-	card_button.text = str(card.get("name", card_id))
+	_set_card_button_text(card_button, str(card.get("name", card_id)))
 	card_button.tooltip_text = _build_recipe_tooltip(card_id)
 	card_button.set_meta("card_id", card_id)
 	card_button.set_meta("flavors", _normalize_flavors(flavor_values if not flavor_values.is_empty() else card.get("flavors", {})))
@@ -327,7 +405,7 @@ func _input(event: InputEvent) -> void:
 		return
 
 	if deck_drag_pending and not drag_in_progress:
-		_draw_card()
+		_start_turn()
 		_clear_drag_state()
 		get_viewport().set_input_as_handled()
 	elif drag_in_progress:
@@ -357,7 +435,7 @@ func _get_drag_source_at(screen_position: Vector2) -> Dictionary:
 	if not fridge_card_id.is_empty() and fridge_slot_button.get_global_rect().has_point(screen_position):
 		return {"zone": "fridge", "card_id": fridge_card_id}
 
-	if not deck.is_empty() and deck_draw_button.get_global_rect().has_point(screen_position):
+	if not turn_active and not deck.is_empty() and deck_draw_button.get_global_rect().has_point(screen_position):
 		return {"zone": "deck", "card_id": deck.back()}
 	return {}
 
@@ -390,6 +468,8 @@ func _show_drag_preview(card_id: String, screen_position: Vector2) -> void:
 	preview_label.text = str(card.get("name", card_id))
 	preview_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	preview_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	preview_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	preview_label.clip_text = true
 	preview_label.add_theme_color_override("font_color", Color.WHITE)
 	drag_preview.add_child(preview_label)
 	drag_preview.position = screen_position + Vector2(12, 12)
@@ -412,9 +492,9 @@ func _perform_drag_drop(source: Dictionary, destination: Dictionary) -> void:
 	var card_id := str(source.get("card_id", ""))
 	if source_zone == "deck":
 		if destination_zone == "hand":
-			_draw_card()
+			_start_turn()
 		else:
-			_update_status("山札のカードは手札へドラッグしてください。")
+			_update_status("山札を押すか、手札へドラッグしてターンを開始してください。")
 		return
 	if source_zone == "hand" and destination_zone == "hand":
 		var source_control: Button = source.get("control")
@@ -629,47 +709,81 @@ func _format_number(value: float) -> String:
 	return "%.2f" % rounded
 
 func _cook_board() -> void:
-	var recipe_matches := _find_board_recipe_matches()
-	if recipe_matches.is_empty():
-		_update_status("合成できるレシピがありません。")
+	if not turn_active:
+		_update_status("ターン開始後に「料理」を押してください。")
 		return
-	var consumed_positions: Dictionary = {}
 	var cooked_count := 0
 	var cooked_summaries := PackedStringArray()
-	for recipe_match in recipe_matches:
-		var positions: Array = recipe_match["positions"]
-		var can_cook := true
-		for position_variant in positions:
-			if consumed_positions.has(position_variant) or not board_cards.has(position_variant):
-				can_cook = false
-				break
-		if not can_cook:
-			continue
-		var anchor: Vector2i = recipe_match["anchor"]
-		var result_id: String = recipe_match["result"]
-		var flavor_total := _sum_card_flavors(positions)
-		var taste_result := _calculate_deliciousness(flavor_total)
-		var result_name := str(card_definitions.get(result_id, {}).get("name", result_id))
-		var flavor_summary := ""
-		for flavor_key in FLAVOR_KEYS:
-			if not flavor_summary.is_empty():
-				flavor_summary += " / "
-			flavor_summary += "%s %s" % [FLAVOR_NAMES[flavor_key], _format_number(float(flavor_total[flavor_key]))]
-		cooked_summaries.append("%s: %s | 主役 %s | うま味倍率 x%s | おいしさ %s" % [result_name, flavor_summary, FLAVOR_NAMES[taste_result["main_flavor"]], _format_number(float(taste_result["multiplier"])), _format_number(float(taste_result["deliciousness"]))])
-		for position_variant in positions:
-			var position: Vector2i = position_variant
-			consumed_positions[position] = true
-			if position != anchor:
-				board_cards.erase(position)
-				board_flavors.erase(position)
-		board_cards[anchor] = result_id
-		board_flavors[anchor] = flavor_total
-		cooked_count += 1
-	if cooked_count == 0:
-		_update_status("合成対象のカードが重なっているため、料理できませんでした。")
-		return
+	var course_scores := {"appetizer": 0.0, "soup": 0.0, "main": 0.0, "dessert": 0.0}
+	var chain_passes := 0
+	while chain_passes < BOARD_SIZE * BOARD_SIZE:
+		chain_passes += 1
+		var recipe_matches := _find_board_recipe_matches()
+		if recipe_matches.is_empty():
+			break
+		var consumed_positions: Dictionary = {}
+		var cooked_this_pass := 0
+		for recipe_match in recipe_matches:
+			var positions: Array = recipe_match["positions"]
+			var can_cook := true
+			for position_variant in positions:
+				if consumed_positions.has(position_variant) or not board_cards.has(position_variant):
+					can_cook = false
+					break
+			if not can_cook:
+				continue
+			var anchor: Vector2i = recipe_match["anchor"]
+			var result_id: String = recipe_match["result"]
+			var flavor_total := _sum_card_flavors(positions)
+			var taste_result := _calculate_deliciousness(flavor_total)
+			var course := str(recipe_match.get("course", "main"))
+			if course_scores.has(course):
+				course_scores[course] = float(course_scores[course]) + float(taste_result["deliciousness"])
+				menu_course_scores[course] = float(menu_course_scores[course]) + float(taste_result["deliciousness"])
+				menu_course_counts[course] = int(menu_course_counts[course]) + 1
+			var result_name := str(card_definitions.get(result_id, {}).get("name", result_id))
+			if menu_course_terms.has(course):
+				menu_course_terms[course].append("%s %s" % [result_name, _format_number(float(taste_result["deliciousness"]))])
+			var flavor_summary := ""
+			for flavor_key in FLAVOR_KEYS:
+				if not flavor_summary.is_empty():
+					flavor_summary += " / "
+				flavor_summary += "%s %s" % [FLAVOR_NAMES[flavor_key], _format_number(float(flavor_total[flavor_key]))]
+			cooked_summaries.append("%s: %s | 主役 %s | うま味倍率 x%s | おいしさ %s" % [result_name, flavor_summary, FLAVOR_NAMES[taste_result["main_flavor"]], _format_number(float(taste_result["multiplier"])), _format_number(float(taste_result["deliciousness"]))])
+			for position_variant in positions:
+				var position: Vector2i = position_variant
+				consumed_positions[position] = true
+				if position != anchor:
+					board_cards.erase(position)
+					board_flavors.erase(position)
+			board_cards[anchor] = result_id
+			board_flavors[anchor] = flavor_total
+			cooked_count += 1
+			cooked_this_pass += 1
+		if cooked_this_pass == 0:
+			break
+	var turn_course_summary := ""
+	var menu_course_summary := ""
+	total_score = 1.0
+	for course_key in COURSE_KEYS:
+		if not turn_course_summary.is_empty():
+			turn_course_summary += " / "
+			menu_course_summary += " × "
+		var turn_course_score := float(course_scores[course_key])
+		var has_menu_course := int(menu_course_counts[course_key]) > 0
+		var menu_course_score := float(menu_course_scores[course_key]) if has_menu_course else 1.0
+		turn_course_summary += "%s %s" % [COURSE_NAMES[course_key], _format_number(turn_course_score)]
+		menu_course_summary += "%s %s%s" % [COURSE_NAMES[course_key], _format_number(menu_course_score), "" if has_menu_course else "（該当なし・倍率1）"]
+		total_score *= menu_course_score
+	_update_score_display()
+	for hand_card in hand_container.get_children():
+		hand_container.remove_child(hand_card)
+		hand_card.queue_free()
+	turn_active = false
+	_update_deck_count()
 	_refresh_board()
-	_update_status("%d品の料理が完成しました。\n%s" % [cooked_count, "\n".join(cooked_summaries)])
+	var cooked_summary := "このターンに完成した料理はありません。" if cooked_summaries.is_empty() else "料理: " + " / ".join(cooked_summaries)
+	_update_status("ターン%d終了（%d品完成）\n今回: %s\n献立: %s = %.2f点\n%s" % [turn_number, cooked_count, turn_course_summary, menu_course_summary, total_score, cooked_summary])
 
 func _find_board_recipe_matches() -> Array[Dictionary]:
 	var matches: Array[Dictionary] = []
@@ -712,7 +826,8 @@ func _find_recipe_match_at(anchor: Vector2i, recipe: Dictionary) -> Dictionary:
 			return {
 				"anchor": anchor,
 				"positions": matched_positions,
-				"result": str(recipe.get("result", ""))
+				"result": str(recipe.get("result", "")),
+				"course": str(recipe.get("course", "main"))
 			}
 	return {}
 
@@ -742,7 +857,8 @@ func _update_deck_count() -> void:
 	if deck_label != null:
 		deck_label.text = "山札: %d枚" % deck.size()
 	if deck_draw_button != null:
-		deck_draw_button.disabled = deck.is_empty()
+		_set_card_button_text(deck_draw_button, "ターン進行中" if turn_active else "ターン開始")
+		deck_draw_button.disabled = deck.is_empty() or turn_active
 		_style_card_button(deck_draw_button, Color("#080808"))
 	if trash_slot_button != null:
 		_style_card_button(trash_slot_button, Color("#080808"))
@@ -752,15 +868,32 @@ func _update_storage_slots() -> void:
 		return
 	if fridge_card_id.is_empty():
 		fridge_label.text = "冷蔵庫"
-		fridge_slot_button.text = "空き"
+		_set_card_button_text(fridge_slot_button, "空き")
 		fridge_slot_button.tooltip_text = "カードをここへドラッグして保存"
 		_style_card_button(fridge_slot_button, Color("#080808"))
 	else:
 		var card: Dictionary = card_definitions.get(fridge_card_id, {})
 		fridge_label.text = "冷蔵庫（1/1）"
-		fridge_slot_button.text = str(card.get("name", fridge_card_id))
+		_set_card_button_text(fridge_slot_button, str(card.get("name", fridge_card_id)))
 		fridge_slot_button.tooltip_text = "盤面かゴミ箱へドラッグできます。手札には戻せません。\n" + _build_recipe_tooltip(fridge_card_id)
 		_style_card_button(fridge_slot_button, Color(str(card.get("color", "#ffffff"))))
 func _update_status(message: String) -> void:
 	if status_label != null:
 		status_label.text = message
+
+func _update_score_display() -> void:
+	if score_label == null:
+		return
+	var course_details := PackedStringArray()
+	for course_key in COURSE_KEYS:
+		var has_course := int(menu_course_counts[course_key]) > 0
+		var course_score := float(menu_course_scores[course_key]) if has_course else 1.0
+		course_details.append("%s %s" % [COURSE_NAMES[course_key], _format_number(course_score)])
+	score_label.text = "フルコース: %s = %s点" % [" × ".join(course_details), _format_number(total_score)]
+	var course_formulas := PackedStringArray()
+	for course_key in COURSE_KEYS:
+		if int(menu_course_counts[course_key]) == 0:
+			course_formulas.append("%s: 該当料理なし → 1" % COURSE_NAMES[course_key])
+		else:
+			course_formulas.append("%s: %s = %s" % [COURSE_NAMES[course_key], " + ".join(menu_course_terms[course_key]), _format_number(float(menu_course_scores[course_key]))])
+	score_label.tooltip_text = "各コース得点（料理のおいしさの合計）\n" + "\n".join(course_formulas) + "\nフルコース得点 = 4コース得点の積"
